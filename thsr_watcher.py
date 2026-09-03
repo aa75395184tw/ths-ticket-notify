@@ -224,8 +224,8 @@ def parse_holiday_schedule(text: str) -> list:
     """
     line_re = re.compile(
         r"(?P<name>[^\t\d]{1,20}?)\t+"
-        r"(?P<start>\d{4}/\d{2}/\d{2})\D{0,6}"
-        r"(?P<end>\d{4}/\d{2}/\d{2})\D{0,6}\t+"
+        r"(?P<start>\d{4}/\d{2}/\d{2})\D{0,10}"
+        r"(?P<end>\d{4}/\d{2}/\d{2})\D{0,10}\t+"
         r"(?P<presale>\d{4}/\d{2}/\d{2})"
     )
 
@@ -347,8 +347,8 @@ def check_once(state: dict) -> dict:
                     # 看看每一行「有沒有命中」，方便判斷 regex 到底差在哪
                     _debug_line_re = re.compile(
                         r"(?P<name>[^\t\d]{1,20}?)\t+"
-                        r"(?P<start>\d{4}/\d{2}/\d{2})\D{0,6}"
-                        r"(?P<end>\d{4}/\d{2}/\d{2})\D{0,6}\t+"
+                        r"(?P<start>\d{4}/\d{2}/\d{2})\D{0,10}"
+                        r"(?P<end>\d{4}/\d{2}/\d{2})\D{0,10}\t+"
                         r"(?P<presale>\d{4}/\d{2}/\d{2})"
                     )
                     log.info("[debug] 逐行套用目前 regex 的比對結果：")
