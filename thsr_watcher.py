@@ -31,9 +31,10 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -78,6 +79,33 @@ CONFIG = {
     "REQUEST_TIMEOUT": 15,       # Telegram API 用（秒）
     "PAGE_LOAD_TIMEOUT_MS": 25000,  # Playwright 頁面載入逾時（毫秒）
     "EXTRA_WAIT_MS": 2000,          # 頁面載入完後，額外多等幾秒讓 JS 把內容渲染完
+
+    # --- 假期開賣日提醒清單 ---
+    # 高鐵通常會在假期前 1~2 個月，於「疏運日程表」「疏運期間對號座銷售資訊」
+    # 這兩個頁面公布正確的開賣日期/時間。上面的頁面監控功能偵測到這兩頁有更新時，
+    # 記得回去看一下公布了什麼新日期，再手動把正確的日期填進下面清單即可，
+    # 之後這個功能就會自動在開賣前幫你倒數提醒。
+    #
+    # 格式說明：
+    #   name              - 這個假期的名稱，通知裡會顯示
+    #   open_date         - 開賣日期，格式 YYYY-MM-DD
+    #   open_time         - 開賣時間，格式 HH:MM（24小時制），不確定可以先留空字串
+    #   remind_days_before - 開賣前幾天提醒你，可以填多個，0 代表「開賣當天」也提醒
+    #
+    # 下面先放一組範例（日期是隨便寫的，請務必改成官方公告的正確日期後再使用！）
+    "HOLIDAY_TICKET_OPENINGS": [
+        {
+            "name": "範例：2027年春節疏運",
+            "open_date": "2026-12-25",
+            "open_time": "07:00",
+            "remind_days_before": [3, 1, 0],
+        },
+    ],
+
+    # --- 自動從「疏運日程表」頁面解析出來的假期日期，要提前幾天提醒 ---
+    # （不用手動填假期進 HOLIDAY_TICKET_OPENINGS 了，只要那個表格格式沒大改，
+    #   程式每次檢查都會自動抓出目前公告的所有假期日期並自動加提醒）
+    "AUTO_REMIND_DAYS_BEFORE": [3, 1, 0],
 }
 
 logging.basicConfig(
@@ -183,6 +211,114 @@ def send_telegram_message(text: str) -> bool:
         return False
 
 
+def parse_holiday_schedule(text: str) -> list:
+    """從「疏運日程表」頁面的文字內容中，自動抓出每個假期的：
+    假期名稱、疏運期間（起訖）、開放預售日期。
+
+    依賴高鐵官網目前的排版規律（逐行文字）：
+        <假期名稱>
+        <疏運起日>(星期)~<疏運訖日>(星期)
+        <開放預售日期>(星期)
+
+    如果高鐵改版排版，這裡可能會抓不到東西（回傳空清單），
+    但既有的「頁面內容變動偵測」通知仍會照常運作，讓你自己回來看發生什麼事。
+    """
+    date_range_re = re.compile(
+        r"^(\d{4}/\d{2}/\d{2})\([一二三四五六日]\)\s*[~～]\s*"
+        r"(\d{4}/\d{2}/\d{2})\([一二三四五六日]\)$"
+    )
+    single_date_re = re.compile(r"^(\d{4}/\d{2}/\d{2})\([一二三四五六日]\)$")
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    results = []
+
+    for i, line in enumerate(lines):
+        m_range = date_range_re.match(line)
+        if not m_range:
+            continue
+
+        name = lines[i - 1] if i - 1 >= 0 else None
+        presale = None
+        if i + 1 < len(lines):
+            m_single = single_date_re.match(lines[i + 1])
+            if m_single:
+                presale = m_single.group(1)
+
+        # 過濾掉明顯不是假期名稱的雜訊行（例如剛好也是日期格式、或太長的句子）
+        if name and presale and not date_range_re.match(name) and len(name) <= 20:
+            results.append(
+                {
+                    "name": name,
+                    "period_start": m_range.group(1),
+                    "period_end": m_range.group(2),
+                    "presale_date": presale,
+                }
+            )
+
+    return results
+
+
+def get_all_holiday_openings(state: dict) -> list:
+    """合併「手動設定」跟「自動從疏運日程表解析出來」的假期開賣日清單。"""
+    merged = list(CONFIG.get("HOLIDAY_TICKET_OPENINGS", []))
+
+    for item in state.get("auto_holiday_schedule", []):
+        merged.append(
+            {
+                "name": f"{item['name']}（自動偵測）",
+                "open_date": item["presale_date"].replace("/", "-"),
+                "open_time": "",
+                "remind_days_before": CONFIG.get("AUTO_REMIND_DAYS_BEFORE", [3, 1, 0]),
+            }
+        )
+
+    return merged
+
+
+def check_holiday_reminders(state: dict) -> dict:
+    """檢查合併後的假期開賣日清單，開賣日前 N 天自動發提醒。
+    用 state 記錄「已經發送過的提醒」，避免每 5 分鐘重複轟炸。"""
+    sent_key = "holiday_reminders_sent"
+    sent = set(state.get(sent_key, []))
+    today = datetime.now().date()
+
+    for item in get_all_holiday_openings(state):
+        name = item.get("name", "（未命名假期）")
+        try:
+            open_date = datetime.strptime(item["open_date"], "%Y-%m-%d").date()
+        except (KeyError, ValueError) as e:
+            log.error("「%s」的開賣日期格式錯誤，請確認是否為 YYYY-MM-DD：%s", name, e)
+            continue
+
+        open_time = item.get("open_time", "")
+
+        for days_before in item.get("remind_days_before", []):
+            target_date = open_date - timedelta(days=days_before)
+            unique_key = f"{name}|{item['open_date']}|{days_before}"
+
+            if today == target_date and unique_key not in sent:
+                if days_before == 0:
+                    when_text = "就是今天！"
+                elif days_before == 1:
+                    when_text = "明天！"
+                else:
+                    when_text = f"還有 {days_before} 天"
+
+                msg = (
+                    f"🎫 高鐵訂票開賣提醒\n"
+                    f"「{name}」\n"
+                    f"開賣日期：{item['open_date']}"
+                    + (f" {open_time}" if open_time else "")
+                    + f"\n距離開賣{when_text}，記得準時上 irs.thsrc.com.tw 搶票！"
+                )
+                send_telegram_message(msg)
+                sent.add(unique_key)
+                log.info("已發送「%s」開賣提醒（%s）", name, when_text)
+
+    state[sent_key] = sorted(sent)
+    return state
+
+
 def check_once(state: dict) -> dict:
     """檢查一輪所有網址，回傳更新後的 state。用同一個瀏覽器分頁依序查詢。"""
     with sync_playwright() as p:
@@ -198,6 +334,19 @@ def check_once(state: dict) -> dict:
             except Exception as e:
                 log.error("抓取「%s」失敗：%s", name, e)
                 continue
+
+            # 如果是「疏運日程表」頁面，順便自動解析裡面的假期日期
+            if name == "疏運日程表":
+                parsed = parse_holiday_schedule(text)
+                if parsed:
+                    state["auto_holiday_schedule"] = parsed
+                    log.info(
+                        "[debug] 自動解析到 %d 筆假期日期：%s",
+                        len(parsed),
+                        "、".join(item["name"] for item in parsed),
+                    )
+                else:
+                    log.warning("[debug] 這次沒有從「疏運日程表」解析到任何假期日期，可能排版有變動")
 
             h = text_hash(text)
             prev = state.get(url, {})
@@ -237,6 +386,9 @@ def check_once(state: dict) -> dict:
             }
 
         browser.close()
+
+    # 用剛剛抓到的最新假期日期（加上手動設定的清單）檢查是否該發開賣提醒
+    state = check_holiday_reminders(state)
 
     return state
 
