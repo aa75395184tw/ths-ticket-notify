@@ -359,6 +359,17 @@ def check_once(state: dict) -> dict:
                         else:
                             log.info("[debug]   沒命中：%r", ln.strip())
 
+                    # 終極診斷：把第一行的每一個字元的精確 Unicode 編號印出來，
+                    # 排除「看起來一樣、但編碼其實不同」的可能性（例如全形/半形符號、
+                    # 特殊波浪號等，肉眼在螢幕上完全看不出差異）
+                    if sample_lines:
+                        first_line = sample_lines[0].strip()
+                        log.info("[debug] 第一行逐字元 Unicode 編碼（共 %d 字）：", len(first_line))
+                        codepoint_dump = " | ".join(
+                            f"{ch!r}=U+{ord(ch):04X}" for ch in first_line
+                        )
+                        log.info("[debug]   %s", codepoint_dump)
+
             h = text_hash(text)
             prev = state.get(url, {})
             prev_hash = prev.get("hash")
