@@ -13,9 +13,17 @@ thsr_watcher.py
 它等於在做搶票外掛，對其他排隊的乘客不公平，也可能違反高鐵使用條款）。
 收到通知後，請自己手動打開訂票網站完成查詢與付款。
 
+技術說明：高鐵官網的內容頁面是 JS 動態渲染的（不是單純的靜態 HTML），
+所以這裡改用 Playwright 開一個無頭瀏覽器把頁面完整渲染後再抓文字內容。
+
 使用方式：
     python3 thsr_watcher.py            # 常駐執行，每隔 CHECK_INTERVAL_SECONDS 檢查一次
-    python3 thsr_watcher.py --once     # 只檢查一次就結束（適合排 cron / 測試用）
+    python3 thsr_watcher.py --once     # 只檢查一次就結束（適合排 cron / GitHub Actions）
+
+首次使用前，除了 pip install，還需要額外安裝瀏覽器核心（只需一次）：
+    playwright install chromium
+    # 若在 Linux 伺服器/GitHub Actions 上，建議：
+    playwright install --with-deps chromium
 """
 
 import argparse
@@ -23,14 +31,13 @@ import hashlib
 import json
 import logging
 import os
-import re
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
 import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 # ======================================================================
 # 設定區（改這裡就好）
@@ -68,7 +75,9 @@ CONFIG = {
         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
     ),
 
-    "REQUEST_TIMEOUT": 15,
+    "REQUEST_TIMEOUT": 15,       # Telegram API 用（秒）
+    "PAGE_LOAD_TIMEOUT_MS": 25000,  # Playwright 頁面載入逾時（毫秒）
+    "EXTRA_WAIT_MS": 2000,          # 頁面載入完後，額外多等幾秒讓 JS 把內容渲染完
 }
 
 logging.basicConfig(
@@ -99,41 +108,24 @@ def save_state(path: str, state: dict) -> None:
     )
 
 
-def fetch_page_text(url: str) -> str:
-    """抓取頁面並萃取『可見文字』，過濾掉 script/style/導覽選單雜訊。"""
-    headers = {
-        "User-Agent": CONFIG["USER_AGENT"],
-        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-    }
-    resp = requests.get(url, headers=headers, timeout=CONFIG["REQUEST_TIMEOUT"])
-
-    # --- 除錯資訊：印出 HTTP 狀態碼、最終網址（有沒有被導向別的頁面）、內容長度 ---
-    log.info(
-        "[debug] GET %s -> status=%s final_url=%s content_length=%s",
-        url, resp.status_code, resp.url, len(resp.text),
+def fetch_page_text(url: str, pw_page) -> str:
+    """用 Playwright 開真的瀏覽器把頁面 JS 跑完，再抓可見文字。"""
+    pw_page.goto(
+        url,
+        timeout=CONFIG["PAGE_LOAD_TIMEOUT_MS"],
+        wait_until="networkidle",
     )
+    # 有些內容是網路閒置後才用前端邏輯塞進 DOM 的，多等一下比較保險
+    pw_page.wait_for_timeout(CONFIG["EXTRA_WAIT_MS"])
 
-    resp.raise_for_status()
-    resp.encoding = resp.apparent_encoding or "utf-8"
+    text = pw_page.inner_text("body")
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    for tag in soup(["script", "style", "nav", "footer", "header"]):
-        tag.decompose()
-
-    # 高鐵官網主要內容通常在 id="main-content" 或 <main> 內；
-    # 抓不到就退回整個 body，避免漏抓。
-    main = soup.find(id="main-content") or soup.find("main") or soup.body or soup
-    text = main.get_text(separator="\n")
-
-    # 壓縮多餘空白行
     lines = [ln.strip() for ln in text.splitlines()]
     lines = [ln for ln in lines if ln]
     result = "\n".join(lines)
 
-    # --- 除錯資訊：把抓到的前 300 字印出來，方便判斷是不是抓到空殼/擋牆頁面 ---
     preview = result[:300].replace("\n", " | ") if result else "(空白，什麼都沒抓到)"
-    log.info("[debug] 內容預覽（前300字）: %s", preview)
+    log.info("[debug] %s 內容長度=%d 預覽（前300字）: %s", url, len(result), preview)
 
     return result
 
@@ -192,50 +184,59 @@ def send_telegram_message(text: str) -> bool:
 
 
 def check_once(state: dict) -> dict:
-    """檢查一輪所有網址，回傳更新後的 state。"""
-    for name, url in CONFIG["URLS"].items():
-        try:
-            text = fetch_page_text(url)
-        except requests.RequestException as e:
-            log.error("抓取「%s」失敗：%s", name, e)
-            continue
+    """檢查一輪所有網址，回傳更新後的 state。用同一個瀏覽器分頁依序查詢。"""
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        pw_page = browser.new_page(
+            user_agent=CONFIG["USER_AGENT"],
+            locale="zh-TW",
+        )
 
-        h = text_hash(text)
-        prev = state.get(url, {})
-        prev_hash = prev.get("hash")
+        for name, url in CONFIG["URLS"].items():
+            try:
+                text = fetch_page_text(url, pw_page)
+            except Exception as e:
+                log.error("抓取「%s」失敗：%s", name, e)
+                continue
 
-        if prev_hash is None:
-            # 第一次執行，先記錄基準內容，不發通知（避免一啟動就洗版）
-            log.info("首次記錄「%s」內容基準", name)
+            h = text_hash(text)
+            prev = state.get(url, {})
+            prev_hash = prev.get("hash")
+
+            if prev_hash is None:
+                # 第一次執行，先記錄基準內容，不發通知（避免一啟動就洗版）
+                log.info("首次記錄「%s」內容基準", name)
+                state[url] = {
+                    "hash": h,
+                    "text": text,
+                    "last_checked": datetime.now().isoformat(timespec="seconds"),
+                }
+                continue
+
+            hits = find_keyword_hits(text, CONFIG["KEYWORDS"])
+
+            if h != prev_hash:
+                log.info("「%s」內容有變動！", name)
+                snippet = diff_snippet(prev.get("text", ""), text)
+                star = " ⭐關鍵字命中：" + "、".join(hits) if hits else ""
+                msg = (
+                    f"🚄 高鐵頁面更新通知\n"
+                    f"頁面：{name}{star}\n"
+                    f"連結：{url}\n"
+                    f"時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"—— 新增/變動內容摘要 ——\n{snippet}"
+                )
+                send_telegram_message(msg)
+            else:
+                log.info("「%s」內容無變動", name)
+
             state[url] = {
                 "hash": h,
                 "text": text,
                 "last_checked": datetime.now().isoformat(timespec="seconds"),
             }
-            continue
 
-        hits = find_keyword_hits(text, CONFIG["KEYWORDS"])
-
-        if h != prev_hash:
-            log.info("「%s」內容有變動！", name)
-            snippet = diff_snippet(prev.get("text", ""), text)
-            star = " ⭐關鍵字命中：" + "、".join(hits) if hits else ""
-            msg = (
-                f"🚄 高鐵頁面更新通知\n"
-                f"頁面：{name}{star}\n"
-                f"連結：{url}\n"
-                f"時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"—— 新增/變動內容摘要 ——\n{snippet}"
-            )
-            send_telegram_message(msg)
-        else:
-            log.info("「%s」內容無變動", name)
-
-        state[url] = {
-            "hash": h,
-            "text": text,
-            "last_checked": datetime.now().isoformat(timespec="seconds"),
-        }
+        browser.close()
 
     return state
 
