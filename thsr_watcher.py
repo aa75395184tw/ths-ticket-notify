@@ -347,6 +347,13 @@ def check_once(state: dict) -> dict:
                     )
                 else:
                     log.warning("[debug] 這次沒有從「疏運日程表」解析到任何假期日期，可能排版有變動")
+                    # 找出含有西元年份日期格式的那幾行，用 repr() 印出精確結構
+                    # （repr 可以清楚看到空白、Tab、換行、全形/半形符號等，方便比對）
+                    date_like = re.compile(r"\d{4}/\d{2}/\d{2}")
+                    sample_lines = [ln for ln in text.splitlines() if date_like.search(ln)][:10]
+                    log.info("[debug] 疑似含日期的原始行內容（repr）：")
+                    for ln in sample_lines:
+                        log.info("[debug]   %r", ln)
 
             h = text_hash(text)
             prev = state.get(url, {})
