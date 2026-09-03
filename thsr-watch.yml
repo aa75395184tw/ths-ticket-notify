@@ -1,0 +1,45 @@
+name: THSR Watcher
+
+on:
+  schedule:
+    # 每 5 分鐘執行一次（UTC 時間，cron 語法本身不分時區）
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}   # 允許在 GitHub 網頁上手動點「Run workflow」測試
+
+# 讓這個 workflow 可以把更新後的 state 檔案 commit 回 repo
+permissions:
+  contents: write
+
+# 避免上一輪還沒跑完，下一輪又觸發，導致 state 檔案衝突
+concurrency:
+  group: thsr-watcher
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run THSR watcher (single check)
+        env:
+          THSR_TG_TOKEN: ${{ secrets.THSR_TG_TOKEN }}
+          THSR_TG_CHAT_ID: ${{ secrets.THSR_TG_CHAT_ID }}
+        run: python thsr_watcher.py --once
+
+      - name: Commit updated state (if changed)
+        run: |
+          git config user.name "thsr-watcher-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add thsr_watcher_state.json
+          git diff --staged --quiet || git commit -m "update watcher state [skip ci]"
+          git push
