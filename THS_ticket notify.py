@@ -42,7 +42,7 @@ CONFIG = {
     # 2. 跟你剛建立的 bot 隨便說一句話（例如 /start）
     # 3. 瀏覽器打開：https://api.telegram.org/bot<你的TOKEN>/getUpdates
     #    在回傳的 JSON 裡找 "chat":{"id": 這個數字就是 CHAT_ID
-    "TELEGRAM_BOT_TOKEN": os.environ.get("THSR_TG_TOKEN", "8832061778:AAEs1fh-5fZ65FkSqvs2Ks4N-Or-KxTLKe4"),
+    "TELEGRAM_BOT_TOKEN": os.environ.get("THSR_TG_TOKEN", "Get-ChildItem -Force"),
     "TELEGRAM_CHAT_ID": os.environ.get("THSR_TG_CHAT_ID", "1211817511"),
 
     # --- 檢查頻率（秒）。太短容易被網站擋，建議不要低於 60 秒 ---
