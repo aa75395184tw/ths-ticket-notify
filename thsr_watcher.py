@@ -223,16 +223,16 @@ def parse_holiday_schedule(text: str) -> list:
     但既有的「頁面內容變動偵測」通知仍會照常運作，讓你自己回來看發生什麼事。
     """
     line_re = re.compile(
-        r"^(?P<name>\S+?)\t"
-        r"(?P<start>\d{4}/\d{2}/\d{2})[（(][一二三四五六日][）)].{0,3}"
-        r"(?P<end>\d{4}/\d{2}/\d{2})[（(][一二三四五六日][）)]\t"
-        r"(?P<presale>\d{4}/\d{2}/\d{2})[（(][一二三四五六日][）)]\s*$"
+        r"(?P<name>[^\t\d]{1,20}?)\t+"
+        r"(?P<start>\d{4}/\d{2}/\d{2})\D{0,6}"
+        r"(?P<end>\d{4}/\d{2}/\d{2})\D{0,6}\t+"
+        r"(?P<presale>\d{4}/\d{2}/\d{2})"
     )
 
     results = []
     for raw_line in text.splitlines():
         line = raw_line.strip("\n\r")
-        m = line_re.match(line)
+        m = line_re.search(line)
         if m:
             results.append(
                 {
@@ -342,6 +342,22 @@ def check_once(state: dict) -> dict:
                     log.info("[debug] 疑似含日期的原始行內容（repr）：")
                     for ln in sample_lines:
                         log.info("[debug]   %r", ln)
+
+                    # 額外診斷：直接把目前的 line_re 拿去套用在這些行上，
+                    # 看看每一行「有沒有命中」，方便判斷 regex 到底差在哪
+                    _debug_line_re = re.compile(
+                        r"(?P<name>[^\t\d]{1,20}?)\t+"
+                        r"(?P<start>\d{4}/\d{2}/\d{2})\D{0,6}"
+                        r"(?P<end>\d{4}/\d{2}/\d{2})\D{0,6}\t+"
+                        r"(?P<presale>\d{4}/\d{2}/\d{2})"
+                    )
+                    log.info("[debug] 逐行套用目前 regex 的比對結果：")
+                    for ln in sample_lines:
+                        _m = _debug_line_re.search(ln.strip())
+                        if _m:
+                            log.info("[debug]   命中！%s", _m.groupdict())
+                        else:
+                            log.info("[debug]   沒命中：%r", ln.strip())
 
             h = text_hash(text)
             prev = state.get(url, {})
