@@ -215,43 +215,31 @@ def parse_holiday_schedule(text: str) -> list:
     """從「疏運日程表」頁面的文字內容中，自動抓出每個假期的：
     假期名稱、疏運期間（起訖）、開放預售日期。
 
-    依賴高鐵官網目前的排版規律（逐行文字）：
-        <假期名稱>
-        <疏運起日>(星期)~<疏運訖日>(星期)
-        <開放預售日期>(星期)
+    實際觀察到的格式是「一行一個假期」，欄位用 Tab 字元分隔，日期用全形括號
+    標註星期、期間中間用全形波浪號分隔，例如：
+        春節\\t2026/02/13（五）～2026/02/23（一）\\t2026/01/16（五）
 
     如果高鐵改版排版，這裡可能會抓不到東西（回傳空清單），
     但既有的「頁面內容變動偵測」通知仍會照常運作，讓你自己回來看發生什麼事。
     """
-    date_range_re = re.compile(
-        r"^(\d{4}/\d{2}/\d{2})\([一二三四五六日]\)\s*[~～]\s*"
-        r"(\d{4}/\d{2}/\d{2})\([一二三四五六日]\)$"
+    line_re = re.compile(
+        r"^(?P<name>\S+?)\t"
+        r"(?P<start>\d{4}/\d{2}/\d{2})[（(][一二三四五六日][）)]\s*[~～]\s*"
+        r"(?P<end>\d{4}/\d{2}/\d{2})[（(][一二三四五六日][）)]\t"
+        r"(?P<presale>\d{4}/\d{2}/\d{2})[（(][一二三四五六日][）)]\s*$"
     )
-    single_date_re = re.compile(r"^(\d{4}/\d{2}/\d{2})\([一二三四五六日]\)$")
 
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     results = []
-
-    for i, line in enumerate(lines):
-        m_range = date_range_re.match(line)
-        if not m_range:
-            continue
-
-        name = lines[i - 1] if i - 1 >= 0 else None
-        presale = None
-        if i + 1 < len(lines):
-            m_single = single_date_re.match(lines[i + 1])
-            if m_single:
-                presale = m_single.group(1)
-
-        # 過濾掉明顯不是假期名稱的雜訊行（例如剛好也是日期格式、或太長的句子）
-        if name and presale and not date_range_re.match(name) and len(name) <= 20:
+    for raw_line in text.splitlines():
+        line = raw_line.strip("\n\r")
+        m = line_re.match(line)
+        if m:
             results.append(
                 {
-                    "name": name,
-                    "period_start": m_range.group(1),
-                    "period_end": m_range.group(2),
-                    "presale_date": presale,
+                    "name": m.group("name"),
+                    "period_start": m.group("start"),
+                    "period_end": m.group("end"),
+                    "presale_date": m.group("presale"),
                 }
             )
 
