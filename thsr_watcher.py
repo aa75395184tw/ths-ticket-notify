@@ -101,8 +101,18 @@ def save_state(path: str, state: dict) -> None:
 
 def fetch_page_text(url: str) -> str:
     """抓取頁面並萃取『可見文字』，過濾掉 script/style/導覽選單雜訊。"""
-    headers = {"User-Agent": CONFIG["USER_AGENT"]}
+    headers = {
+        "User-Agent": CONFIG["USER_AGENT"],
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+    }
     resp = requests.get(url, headers=headers, timeout=CONFIG["REQUEST_TIMEOUT"])
+
+    # --- 除錯資訊：印出 HTTP 狀態碼、最終網址（有沒有被導向別的頁面）、內容長度 ---
+    log.info(
+        "[debug] GET %s -> status=%s final_url=%s content_length=%s",
+        url, resp.status_code, resp.url, len(resp.text),
+    )
+
     resp.raise_for_status()
     resp.encoding = resp.apparent_encoding or "utf-8"
 
@@ -119,7 +129,13 @@ def fetch_page_text(url: str) -> str:
     # 壓縮多餘空白行
     lines = [ln.strip() for ln in text.splitlines()]
     lines = [ln for ln in lines if ln]
-    return "\n".join(lines)
+    result = "\n".join(lines)
+
+    # --- 除錯資訊：把抓到的前 300 字印出來，方便判斷是不是抓到空殼/擋牆頁面 ---
+    preview = result[:300].replace("\n", " | ") if result else "(空白，什麼都沒抓到)"
+    log.info("[debug] 內容預覽（前300字）: %s", preview)
+
+    return result
 
 
 def text_hash(text: str) -> str:
