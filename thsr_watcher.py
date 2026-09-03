@@ -224,7 +224,7 @@ def parse_holiday_schedule(text: str) -> list:
     """
     line_re = re.compile(
         r"^(?P<name>\S+?)\t"
-        r"(?P<start>\d{4}/\d{2}/\d{2})[（(][一二三四五六日][）)]\s*[~～]\s*"
+        r"(?P<start>\d{4}/\d{2}/\d{2})[（(][一二三四五六日][）)].{0,3}"
         r"(?P<end>\d{4}/\d{2}/\d{2})[（(][一二三四五六日][）)]\t"
         r"(?P<presale>\d{4}/\d{2}/\d{2})[（(][一二三四五六日][）)]\s*$"
     )
