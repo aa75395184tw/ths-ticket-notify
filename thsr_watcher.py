@@ -67,6 +67,12 @@ CONFIG = {
     # --- 你特別關心的關鍵字（新內容命中時會在通知裡特別標註⭐） ---
     "KEYWORDS": ["中秋", "教師節", "加開", "疏運", "開賣", "開放訂位", "熱銷"],
 
+    # --- 真正會「觸發 Telegram 通知」的關鍵字 ---
+    # 頁面內容有變動時，只有出現這裡列的字，才會真的發 Telegram 通知；
+    # 其他變動（例如系統維護公告之類的雜訊）只會記錄在 log 裡，不會打擾你。
+    # 想收到更多種類的通知，把想要的字加進這個清單就好。
+    "NOTIFY_KEYWORDS": ["加開"],
+
     # --- 狀態存檔位置（記錄上次抓到的內容，重開程式不會重複通知） ---
     "STATE_FILE": "thsr_watcher_state.json",
 
@@ -446,19 +452,27 @@ def check_once(state: dict) -> dict:
                 continue
 
             hits = find_keyword_hits(text, CONFIG["KEYWORDS"])
+            notify_hits = find_keyword_hits(text, CONFIG.get("NOTIFY_KEYWORDS", []))
 
             if h != prev_hash:
                 log.info("「%s」內容有變動！", name)
-                snippet = diff_snippet(prev.get("text", ""), text)
-                star = " ⭐關鍵字命中：" + "、".join(hits) if hits else ""
-                msg = (
-                    f"🚄 高鐵頁面更新通知\n"
-                    f"頁面：{name}{star}\n"
-                    f"連結：{url}\n"
-                    f"時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"—— 新增/變動內容摘要 ——\n{snippet}"
-                )
-                send_telegram_message(msg)
+                if notify_hits:
+                    snippet = diff_snippet(prev.get("text", ""), text)
+                    star = " ⭐關鍵字命中：" + "、".join(hits) if hits else ""
+                    msg = (
+                        f"🚄 高鐵頁面更新通知\n"
+                        f"頁面：{name}{star}\n"
+                        f"連結：{url}\n"
+                        f"時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"—— 新增/變動內容摘要 ——\n{snippet}"
+                    )
+                    send_telegram_message(msg)
+                else:
+                    log.info(
+                        "「%s」內容有變動，但沒有出現通知關鍵字（%s），不發送 Telegram 通知",
+                        name,
+                        "、".join(CONFIG.get("NOTIFY_KEYWORDS", [])),
+                    )
             else:
                 log.info("「%s」內容無變動", name)
 
