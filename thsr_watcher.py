@@ -106,6 +106,12 @@ CONFIG = {
     # （不用手動填假期進 HOLIDAY_TICKET_OPENINGS 了，只要那個表格格式沒大改，
     #   程式每次檢查都會自動抓出目前公告的所有假期日期並自動加提醒）
     "AUTO_REMIND_DAYS_BEFORE": [3, 1, 0],
+
+    # --- 定時回報（心跳通知）---
+    # 就算頁面內容都沒變動，還是每隔這麼多「分鐘」發一次「系統運作中」的回報，
+    # 讓你安心知道機器人還活著、沒有故障。真正的「加開/變動」通知完全不受這個影響，
+    # 只要偵測到變動，還是會照舊立刻通知，不用等到下一次心跳時間。
+    "HEARTBEAT_INTERVAL_MINUTES": 30,
 }
 
 logging.basicConfig(
@@ -307,6 +313,55 @@ def check_holiday_reminders(state: dict) -> dict:
     return state
 
 
+def check_heartbeat(state: dict) -> dict:
+    """就算頁面都沒變動，每隔 HEARTBEAT_INTERVAL_MINUTES 分鐘，
+    還是發一則「系統運作中」的回報，附上下一個假期開賣倒數，讓你安心。"""
+    interval_minutes = CONFIG.get("HEARTBEAT_INTERVAL_MINUTES", 30)
+    now = datetime.now()
+
+    last_at_str = state.get("last_heartbeat_at")
+    should_send = True
+    if last_at_str:
+        try:
+            last_at = datetime.fromisoformat(last_at_str)
+            should_send = (now - last_at) >= timedelta(minutes=interval_minutes)
+        except ValueError:
+            should_send = True
+
+    if not should_send:
+        return state
+
+    # 找出最近一個還沒到的開賣日，附在回報訊息裡
+    upcoming = []
+    for item in get_all_holiday_openings(state):
+        try:
+            open_date = datetime.strptime(item["open_date"], "%Y-%m-%d").date()
+        except (KeyError, ValueError):
+            continue
+        if open_date >= now.date():
+            upcoming.append((open_date, item["name"]))
+    upcoming.sort(key=lambda x: x[0])
+
+    next_text = "\n目前沒有已知的即將開賣假期。"
+    if upcoming:
+        next_date, next_name = upcoming[0]
+        days_left = (next_date - now.date()).days
+        when = "就是今天" if days_left == 0 else f"還有 {days_left} 天"
+        next_text = f"\n下一個開賣：「{next_name}」{next_date.isoformat()}（{when}）"
+
+    msg = (
+        f"✅ 高鐵監控機器人運作中\n"
+        f"回報時間：{now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"監控頁面數：{len(CONFIG['URLS'])}"
+        + next_text
+    )
+    send_telegram_message(msg)
+    state["last_heartbeat_at"] = now.isoformat(timespec="seconds")
+    log.info("已發送心跳回報")
+
+    return state
+
+
 def check_once(state: dict) -> dict:
     """檢查一輪所有網址，回傳更新後的 state。用同一個瀏覽器分頁依序查詢。"""
     with sync_playwright() as p:
@@ -411,6 +466,9 @@ def check_once(state: dict) -> dict:
 
     # 用剛剛抓到的最新假期日期（加上手動設定的清單）檢查是否該發開賣提醒
     state = check_holiday_reminders(state)
+
+    # 就算上面都沒有變動，也定期發一次「系統運作中」的心跳回報
+    state = check_heartbeat(state)
 
     return state
 
