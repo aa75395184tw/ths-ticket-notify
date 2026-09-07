@@ -305,9 +305,13 @@ def check_holiday_reminders(state: dict) -> dict:
                     + (f" {open_time}" if open_time else "")
                     + f"\n距離開賣{when_text}，記得準時上 irs.thsrc.com.tw 搶票！"
                 )
-                send_telegram_message(msg)
-                sent.add(unique_key)
-                log.info("已發送「%s」開賣提醒（%s）", name, when_text)
+                if send_telegram_message(msg):
+                    sent.add(unique_key)
+                    log.info("已發送「%s」開賣提醒（%s）", name, when_text)
+                else:
+                    log.warning(
+                        "「%s」開賣提醒傳送失敗，這次不標記為已發送，下次會再嘗試", name
+                    )
 
     state[sent_key] = sorted(sent)
     return state
@@ -355,9 +359,11 @@ def check_heartbeat(state: dict) -> dict:
         f"監控頁面數：{len(CONFIG['URLS'])}"
         + next_text
     )
-    send_telegram_message(msg)
-    state["last_heartbeat_at"] = now.isoformat(timespec="seconds")
-    log.info("已發送心跳回報")
+    if send_telegram_message(msg):
+        state["last_heartbeat_at"] = now.isoformat(timespec="seconds")
+        log.info("已發送心跳回報")
+    else:
+        log.warning("心跳回報傳送失敗，這次不更新時間，下次執行會再嘗試")
 
     return state
 
