@@ -35,6 +35,7 @@ import re
 import sys
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import requests
@@ -126,6 +127,14 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("thsr_watcher")
+
+# GitHub Actions 伺服器預設用 UTC 時區，這裡統一用這個函式取得「台北時間」，
+# 不管程式實際跑在哪個時區的機器上，看到的時間都會是正確的台灣時間。
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+
+def now_tw() -> datetime:
+    return datetime.now(TAIPEI_TZ)
 
 
 # ======================================================================
@@ -280,7 +289,7 @@ def check_holiday_reminders(state: dict) -> dict:
     用 state 記錄「已經發送過的提醒」，避免每 5 分鐘重複轟炸。"""
     sent_key = "holiday_reminders_sent"
     sent = set(state.get(sent_key, []))
-    today = datetime.now().date()
+    today = now_tw().date()
 
     for item in get_all_holiday_openings(state):
         name = item.get("name", "（未命名假期）")
@@ -327,15 +336,19 @@ def check_heartbeat(state: dict) -> dict:
     """就算頁面都沒變動，每隔 HEARTBEAT_INTERVAL_MINUTES 分鐘，
     還是發一則「系統運作中」的回報，附上下一個假期開賣倒數，讓你安心。"""
     interval_minutes = CONFIG.get("HEARTBEAT_INTERVAL_MINUTES", 30)
-    now = datetime.now()
+    now = now_tw()
 
     last_at_str = state.get("last_heartbeat_at")
     should_send = True
     if last_at_str:
         try:
             last_at = datetime.fromisoformat(last_at_str)
+            if last_at.tzinfo is None:
+                # 舊版本存的時間沒有時區資訊（是用 GitHub 伺服器的 UTC 時間存的），
+                # 這裡把它當作 UTC 處理，才能正確跟現在的台北時間比較
+                last_at = last_at.replace(tzinfo=ZoneInfo("UTC"))
             should_send = (now - last_at) >= timedelta(minutes=interval_minutes)
-        except ValueError:
+        except (ValueError, TypeError):
             should_send = True
 
     if not should_send:
@@ -447,7 +460,7 @@ def check_once(state: dict) -> dict:
                 state[url] = {
                     "hash": h,
                     "text": text,
-                    "last_checked": datetime.now().isoformat(timespec="seconds"),
+                    "last_checked": now_tw().isoformat(timespec="seconds"),
                 }
                 continue
 
@@ -463,7 +476,7 @@ def check_once(state: dict) -> dict:
                         f"🚄 高鐵頁面更新通知\n"
                         f"頁面：{name}{star}\n"
                         f"連結：{url}\n"
-                        f"時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"時間：{now_tw().strftime('%Y-%m-%d %H:%M:%S')}\n"
                         f"—— 新增/變動內容摘要 ——\n{snippet}"
                     )
                     send_telegram_message(msg)
@@ -479,7 +492,7 @@ def check_once(state: dict) -> dict:
             state[url] = {
                 "hash": h,
                 "text": text,
-                "last_checked": datetime.now().isoformat(timespec="seconds"),
+                "last_checked": now_tw().isoformat(timespec="seconds"),
             }
 
         browser.close()
